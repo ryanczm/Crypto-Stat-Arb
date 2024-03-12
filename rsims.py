@@ -14,36 +14,13 @@ def positions_from_no_trade_buffer(current_positions, current_prices, target_wei
             target_positions[j] = (target_weights[j] - trade_buffer) * cap_equity / current_prices[j]
         elif current_weights[j] > target_weights[j] + trade_buffer:
             target_positions[j] = (target_weights[j] + trade_buffer) * cap_equity / current_prices[j]
-
+        else:
+            target_positions[j] = current_positions[j]
     return target_positions
 
 
 
 def fixed_commission_backtest_with_funding(prices, target_weights, funding_rates, trade_buffer=0.0, initial_cash=10000, commission_pct=0, reinvest=True):
-    if trade_buffer < 0:
-        raise ValueError("trade_buffer must be greater than or equal to zero")
-
-    misaligned_timestamps_prices = prices.iloc[:, 0] != target_weights.iloc[:, 0]
-    misaligned_timestamps_funding = prices.iloc[:, 0] != funding_rates.iloc[:, 0]
-
-    if misaligned_timestamps_prices.any():
-        raise ValueError(f"Prices timestamps misaligned with target weights timestamps at prices indexes {misaligned_timestamps_prices}")
-
-    if misaligned_timestamps_funding.any():
-        raise ValueError(f"Prices timestamps misaligned with funding rates timestamps at prices indexes {misaligned_timestamps_funding}")
-
-    if not prices.shape == target_weights.shape:
-        raise ValueError("Prices and weights matrices must have the same dimensions")
-
-    if not prices.shape == funding_rates.shape:
-        raise ValueError("Prices and funding matrices must have the same dimensions")
-
-    # Check for NA in weights and funding matrices
-    if target_weights.isna().any().any():
-        print("NA present in target weights: consider replacing these values before continuing")
-
-    if funding_rates.isna().any().any():
-        print("NA present in funding rates: consider replacing these values before continuing")
 
     # Get tickers for later
     tickers = prices.columns[1:]
@@ -73,47 +50,35 @@ def fixed_commission_backtest_with_funding(prices, target_weights, funding_rates
         period_pnl = np.where(period_pnl == np.nan, 0, period_pnl) + funding
         # Update cash balance - includes adding back yesterday's margin and deducting today's margin
         cash += np.sum(period_pnl)
-
         # Update equity
         cap_equity = min(initial_cash, cash) if not reinvest else cash
         # Update positions based on no-trade buffer
-
         target_positions = positions_from_no_trade_buffer(current_positions, current_prices, current_target_weights, cap_equity, trade_buffer)
         # Calculate position deltas, trade values, and commissions
         trades = target_positions - current_positions
 
         trade_value = trades * current_prices.dropna().values
         commissions = np.abs(trade_value) * commission_pct
-
-        # Post-trade cash: cash freed up from closing positions, cash used as margin, commissions
-        target_position_value = target_positions * current_prices.dropna().values
-        post_trade_cash = cash - np.sum(commissions) 
-
+        # After each iteration, set positions to current positions
         current_positions = target_positions
         position_value = current_positions * current_prices.dropna().values
 
-        # Update cash
-        cash = post_trade_cash
-        total_eq = np.append(total_eq, post_trade_cash)
+        # Update cash with impact from commissions
+        cash -= np.sum(commissions)
+        total_eq = np.append(total_eq, cash)
 
         row_dict = {
-
             "Date": [current_date] * (num_assets),
             "Close": current_prices.dropna().values,
             "Position": current_positions,
             "Value": position_value,
             "Funding": funding,
             "PeriodPnL": period_pnl,
-            "Trades": trades,  # Minus because we keep the sign of the original position in liq_contracts
+            "Trades": trades,  
             "TradeValue": trade_value,
             "Commission": commissions,
         }
-
-
-
         rows_list.append(row_dict)
-
-        previous_target_weights = current_target_weights
         previous_prices = current_prices
     
     # Combine list of dictionaries into a DataFrame
@@ -126,15 +91,11 @@ def fixed_commission_backtest_with_funding(prices, target_weights, funding_rates
 
 def split_column_lists(df, tickers):
     result_dfs = {}
-
     for col in df.columns:
         # Apply function to split lists into separate columns
         result_df = df[col].apply(pd.Series)
-        
         # Rename columns with tickers
         result_df.columns = tickers
-        
         # Store the resulting DataFrame
         result_dfs[col] = result_df
-
     return result_dfs
